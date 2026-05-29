@@ -1,4 +1,4 @@
-name: Build TgWsProxy iOS IPA
+name: Build TgWsProxy iOS
 
 on:
   push:
@@ -17,78 +17,37 @@ jobs:
         with:
           xcode-version: '15.2'
       
-      - name: Build Swift Package for iOS
+      - name: Show project structure
         run: |
-          cd ios-app
-          
-          echo "=== Building Swift Package ==="
-          
-          # Создаем папку для сборки
-          mkdir -p build
-          
-          # Собираем Swift Package для iOS
-          # Используем правильный SDK и целевую платформу
-          swift build \
-            -c release \
-            --sdk iphoneos \
-            --destination generic/platform=iOS \
-            || {
-              echo "Standard build failed, trying alternative..."
-              
-              # Пробуем без specific destination
-              swift build -c release || true
-            }
-      
-      - name: Find and package built app
-        run: |
-          cd ios-app
-          mkdir -p output
-          
-          echo "=== Searching for built products ==="
-          
-          # Ищем .app файлы в разных местах
-          find . -name "*.app" -type d 2>/dev/null | while read app_path; do
-            echo "Found: $app_path"
-            cp -r "$app_path" output/ 2>/dev/null || true
-          done
-          
-          # Также проверяем стандартные пути сборки Swift Package
-          if [ -d ".build/release" ]; then
-            echo "Checking .build/release directory..."
-            ls -la .build/release/ || true
-          fi
-          
-          # Показываем результат
+          echo "=== Files in ios-app ==="
+          ls -la ios-app/
           echo ""
-          echo "=== Output files ==="
-          ls -la output/ || echo "No files in output yet"
+          echo "=== Files in ios-app/TgWsProxy ==="
+          ls -laR ios-app/TgWsProxy/ | head -30
       
-      - name: Try building with xcodebuild if swift build failed
-        if: always()
+      - name: Build with swift
         run: |
           cd ios-app
+          mkdir -p build_output
           
-          # Если нет файлов в output, пробуем другой метод
-          if [ ! "$(ls -A output)" ]; then
-            echo "=== Trying xcodebuild method ==="
-            
-            # Проверяем, есть ли проект Xcode внутри TgWsProxy папки
-            if [ -d "TgWsProxy" ]; then
-              cd TgWsProxy
-              
-              # Ищем .xcodeproj или .xcworkspace
-              PROJECT=$(find . -name "*.xcodeproj" -o -name "*.xcworkspace" | head -1)
-              
-              if [ -n "$PROJECT" ]; then
-                echo "Found Xcode project in TgWsProxy: $PROJECT"
-                
-                SCHEME=$(xcodebuild -list | grep "Schemes:" -A 10 | grep -v "Schemes:" | grep -v "^$" | head -n 1 | xargs)
-                echo "Using scheme: $SCHEME"
-                
-                mkdir -p ../build
-                
-                xcodebuild clean archive \
-                  -project "${PROJECT%.xcworkspace}" \
-                  -scheme "$SCHEME" \
-                  -configuration Release \
-                  -archivePath ../build/app.xcarchive \
+          echo "Building Swift Package..."
+          
+          # Пробуем собрать
+          swift build -c release || echo "Build failed but continuing..."
+          
+          # Ищем результат сборки
+          find . -name "*.app" -type d | head -5
+          
+          # Копируем найденные .app файлы
+          find . -name "*.app" -type d -exec cp -r {} build_output/ \; 2>/dev/null || true
+          
+          echo "=== Build output ==="
+          ls -la build_output/ || echo "No files found"
+      
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: TgWsProxy-build
+          path: ios-app/build_output/
+          retention-days: 7
+          if-no-files-found: warn

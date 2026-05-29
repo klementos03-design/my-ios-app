@@ -17,37 +17,68 @@ jobs:
         with:
           xcode-version: '15.2'
       
-      - name: Show project structure
-        run: |
-          echo "=== Files in ios-app ==="
-          ls -la ios-app/
-          echo ""
-          echo "=== Files in ios-app/TgWsProxy ==="
-          ls -laR ios-app/TgWsProxy/ | head -30
-      
-      - name: Build with swift
+      - name: Build Swift Package
         run: |
           cd ios-app
-          mkdir -p build_output
           
-          echo "Building Swift Package..."
+          echo "=== Building Swift Package ==="
           
-          # Пробуем собрать
-          swift build -c release || echo "Build failed but continuing..."
+          # Создаем папку для сборки
+          mkdir -p .build_output
           
-          # Ищем результат сборки
-          find . -name "*.app" -type d | head -5
+          # Собираем Swift Package для iOS
+          swift build \
+            -c release \
+            --sdk "$(xcrun --sdk iphoneos --show-sdk-path)" \
+            -Xswiftc "-target" \
+            -Xswiftc "arm64-apple-ios16.0" \
+            || {
+              echo "Failed with SDK, trying without..."
+              swift build -c release || true
+            }
           
-          # Копируем найденные .app файлы
-          find . -name "*.app" -type d -exec cp -r {} build_output/ \; 2>/dev/null || true
+          # Показываем, что получилось
+          echo "=== Build directory ==="
+          ls -la .build/ 2>/dev/null || echo "No .build directory"
           
-          echo "=== Build output ==="
-          ls -la build_output/ || echo "No files found"
+          # Ищем все файлы
+          echo "=== Looking for built products ==="
+          find .build -type f -executable 2>/dev/null | head -10 || echo "No executables found"
+      
+      - name: Create app bundle manually
+        run: |
+          cd ios-app
+          
+          mkdir -p output/TgWsProxy.app
+          
+          # Копируем Info.plist
+          if [ -f "TgWsProxy/Resources/Info.plist" ]; then
+            cp TgWsProxy/Resources/Info.plist output/TgWsProxy.app/Info.plist
+          fi
+          
+          # Копируем entitlements
+          if [ -f "TgWsProxy/Resources/TgWsProxy.entitlements" ]; then
+            cp TgWsProxy/Resources/TgWsProxy.entitlements output/TgWsProxy.app/TgWsProxy.entitlements
+          fi
+          
+          # Ищем и копируем бинарник
+          BINARY=$(find .build -type f -executable -name "TgWsProxy" 2>/dev/null | head -1)
+          if [ -n "$BINARY" ]; then
+            echo "Found binary: $BINARY"
+            cp "$BINARY" output/TgWsProxy.app/TgWsProxy
+          else
+            echo "No binary found, checking other locations..."
+            find .build -type f 2>/dev/null | head -20
+          fi
+          
+          # Показываем результат
+          echo "=== Output structure ==="
+          ls -laR output/ || echo "Output is empty"
       
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
           name: TgWsProxy-build
-          path: ios-app/build_output/
+          path: ios-app/output/
           retention-days: 7
           if-no-files-found: warn

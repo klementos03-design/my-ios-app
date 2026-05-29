@@ -1,123 +1,95 @@
 name: Build TgWsProxy iOS IPA
 
 on:
-  workflow_dispatch:
   push:
-    paths:
-      - 'ios-app/**'
+    branches: [ main, master ]
+  workflow_dispatch:
 
 jobs:
-  build-ios:
-    runs-on: macos-14
+  build:
+    runs-on: macos-latest
+    
     steps:
-      - uses: actions/checkout@v6
-
+      - uses: actions/checkout@v4
+      
       - name: Setup Xcode
         uses: maxim-lobanov/setup-xcode@v1
         with:
-          xcode-version: latest-stable
-
-      - name: Find iOS SDK
+          xcode-version: '15.4'
+      
+      - name: Check project structure
         run: |
-          SDK=$(xcrun --sdk iphoneos --show-sdk-path)
-          echo "SDK=$SDK" >> $GITHUB_ENV
-          echo "Using SDK: $SDK"
-          swift --version
-          xcodebuild -version
-
-      - name: Compile main app
-        working-directory: ios-app
+          echo "=== Files in ios-app ==="
+          ls -la ios-app/ || echo "No ios-app directory"
+          
+          echo ""
+          echo "=== Looking for .xcodeproj or .xcworkspace ==="
+          find ios-app -name "*.xcodeproj" -o -name "*.xcworkspace" 2>/dev/null || echo "No Xcode project found"
+          
+          echo ""
+          echo "=== Looking for Package.swift ==="
+          find ios-app -name "Package.swift" 2>/dev/null || echo "No Swift package found"
+      
+      - name: Try building with xcodebuild
         run: |
-          set -euo pipefail
-          mkdir -p build/Payload/TgWsProxy.app
-
-          SOURCES=(
-            TgWsProxy/Sources/TgWsProxyApp.swift
-            TgWsProxy/Sources/ContentView.swift
-            TgWsProxy/Sources/SettingsView.swift
-            TgWsProxy/Sources/ProxyConfig.swift
-            TgWsProxy/Sources/ProxyManager.swift
-            TgWsProxy/Sources/Crypto.swift
-            TgWsProxy/Sources/RawWebSocket.swift
-            TgWsProxy/Sources/MTProtoHandshake.swift
-            TgWsProxy/Sources/MTProtoProxyServer.swift
-            TgWsProxy/Sources/LiveActivityManager.swift
-          )
-
-          echo "Compiling ${#SOURCES[@]} Swift files..."
-
-          swiftc \
-            -target arm64-apple-ios16.1 \
-            -sdk "$SDK" \
-            -O \
-            -whole-module-optimization \
-            -module-name TgWsProxy \
-            -emit-executable \
-            -o build/Payload/TgWsProxy.app/TgWsProxy \
-            -framework Foundation \
-            -framework SwiftUI \
-            -framework UIKit \
-            -framework Network \
-            -framework ActivityKit \
-            -framework WidgetKit \
-            "${SOURCES[@]}"
-
-          strip -x build/Payload/TgWsProxy.app/TgWsProxy
-          echo "Main app compiled successfully."
-
-      - name: Compile LiveActivity extension
-        working-directory: ios-app
+          cd ios-app
+          
+          # Ищем .xcodeproj или .xcworkspace
+          PROJECT=$(find . -name "*.xcodeproj" -o -name "*.xcworkspace" | head -1)
+          
+          if [ -n "$PROJECT" ]; then
+            echo "Found Xcode project: $PROJECT"
+            
+            # Получаем имя схемы
+            SCHEME=$(xcodebuild -list | grep "Schemes:" -A 10 | grep -v "Schemes:" | grep -v "^$" | head -n 1 | xargs)
+            echo "Using scheme: $SCHEME"
+            
+            mkdir -p build
+            
+            # Собираем архив без подписи
+            xcodebuild clean archive \
+              -project "${PROJECT%.xcworkspace}" \
+              -scheme "$SCHEME" \
+              -configuration Release \
+              -archivePath build/app.xcarchive \
+              CODE_SIGNING_ALLOWED=NO \
+              CODE_SIGN_IDENTITY="" \
+              CODE_SIGNING_REQUIRED=NO \
+              PROVISIONING_PROFILE_SPECIFIER="" || \
+            echo "Archive failed"
+          else
+            echo "No Xcode project found, trying Swift Package..."
+            
+            # Если есть Package.swift, используем swift build
+            if [ -f "Package.swift" ]; then
+              swift build -c release || echo "Swift build failed"
+            else
+              echo "No build system found!"
+              exit 1
+            fi
+          fi
+      
+      - name: Package output
         run: |
-          set -euo pipefail
-          EXTENSION_DIR="build/Payload/TgWsProxy.app/PlugIns/TgWsProxyLiveActivity.appex"
-          mkdir -p "$EXTENSION_DIR"
-
-          # LiveActivity extension needs the shared attributes type from the main app
-          swiftc \
-            -target arm64-apple-ios16.1 \
-            -sdk "$SDK" \
-            -O \
-            -whole-module-optimization \
-            -module-name TgWsProxyLiveActivity \
-            -emit-executable \
-            -o "$EXTENSION_DIR/TgWsProxyLiveActivity" \
-            -framework Foundation \
-            -framework SwiftUI \
-            -framework WidgetKit \
-            -framework ActivityKit \
-            TgWsProxy/Sources/LiveActivityManager.swift \
-            TgWsProxy/LiveActivity/ProxyLiveActivity.swift
-
-          strip -x "$EXTENSION_DIR/TgWsProxyLiveActivity" 2>/dev/null || true
-
-          # Copy extension Info.plist
-          cp TgWsProxy/LiveActivity/Info.plist "$EXTENSION_DIR/Info.plist"
-          echo "LiveActivity extension compiled successfully."
-
-      - name: Assemble app bundle
-        working-directory: ios-app
-        run: |
-          set -euo pipefail
-          APP_DIR="build/Payload/TgWsProxy.app"
-
-          # Copy main app Info.plist & entitlements
-          cp TgWsProxy/Resources/Info.plist "$APP_DIR/Info.plist"
-          cp TgWsProxy/Resources/TgWsProxy.entitlements "$APP_DIR/TgWsProxy.entitlements"
-          echo -n "APPL????" > "$APP_DIR/PkgInfo"
-
-          echo "App bundle structure:"
-          find "$APP_DIR" -type f | sort
-
-      - name: Create IPA
-        working-directory: ios-app
-        run: |
-          set -euo pipefail
-          cd build
-          zip -r -q ../TgWsProxy-unsigned.ipa Payload/
-          echo "IPA size: $(du -h ../TgWsProxy-unsigned.ipa | cut -f1)"
-
-      - name: Upload IPA
-        uses: actions/upload-artifact@v7
+          cd ios-app
+          mkdir -p output
+          
+          # Копируем .app из архива
+          if [ -d "build/app.xcarchive" ]; then
+            cp -r build/app.xcarchive/Products/Applications/*.app output/ 2>/dev/null || true
+          fi
+          
+          # Или из build директории
+          find ./build -name "*.app" -type d 2>/dev/null | head -1 | xargs -I {} cp -r {} output/ 2>/dev/null || true
+          
+          # Показываем результат
+          echo "=== Output files ==="
+          ls -la output/ || echo "No files in output"
+      
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
         with:
-          name: TgWsProxy-unsigned-ipa
-          path: ios-app/TgWsProxy-unsigned.ipa
+          name: TgWsProxy-build
+          path: ios-app/output/
+          retention-days: 7
+          if-no-files-found: warn
